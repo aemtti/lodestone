@@ -103,13 +103,13 @@ const Q0 = 1.1e5, DEP = 26, DEP2 = DEP * DEP;          // magnet strength, depth
 const EARTH = 1.0, INCL = 53 * D2R;                     // Earth's field, inclination (Korea ~53°)
 const B0SQ = 2.5, BS2 = 64;                             // alignment softness, field that beats friction
 const RA = 30, RP = 14;                                 // alignment rates (in air / on paper)
-const KM = 0.8, MAXM = 160;                             // magnetic pull (reaches only a few cm)
+const KM = 0.45, MAXM = 120;                            // magnetic pull (reaches only about a fingertip's width)
 const GS = 420, MUS = 0.3, MUK = 0.2, GA = 2600;        // 1 g in px/s, static / kinetic friction, hop gravity
-const DGS = 7, KP = 900;                                // crowding: grains take up room, so piles have thickness
+const HCS = 5;                                          // contact grid (px): every grain takes up a little room of its own
 const HOLD = 130, MAXMAG = 6;
 
 let W = 0, H = 0, N = 0, ls = 1;
-let px, py, th, ln, pz, vz, vx, vy, sd, el;
+let px, py, th, ln, pz, vz, vx, vy, sd, el, rad, mu, ox, oy, hIdx, hCell, cnt, rest;
 let agit = 0, dirty = true;
 const magnets = [];
 
@@ -117,6 +117,7 @@ function alloc(n) {
   N = n;
   px = new Float32Array(n); py = new Float32Array(n); th = new Float32Array(n); ln = new Float32Array(n);
   pz = new Float32Array(n); vz = new Float32Array(n); vx = new Float32Array(n); vy = new Float32Array(n); sd = new Float32Array(n); el = new Float32Array(n);
+  rad = new Float32Array(n); mu = new Float32Array(n); ox = new Float32Array(n); oy = new Float32Array(n); hIdx = new Int32Array(n); hCell = new Int32Array(n); cnt = new Uint8Array(n); rest = new Uint8Array(n);
 }
 function sprinkle() {
   const a1 = rnd() * TAU, a2 = rnd() * TAU, a3 = rnd() * TAU, f1 = 0.006 + rnd() * 0.006, f2 = 0.008 + rnd() * 0.008;
@@ -127,10 +128,13 @@ function sprinkle() {
       const d = 0.62 + 0.26 * Math.sin(x * f1 + a1) * Math.sin(y * f2 + a2) + 0.14 * Math.sin((x - y) * 0.013 + a3);
       if (rnd() < d) break;
     }
-    px[i] = clamp(x, 2, W - 2); py[i] = clamp(y, 2, H - 2);
+    px[i] = clamp(x, 5, W - 5); py[i] = clamp(y, 5, H - 5);
     th[i] = rnd() * PI; ln[i] = (2.6 + 5.0 * Math.pow(rnd(), 1.6)) * ls; sd[i] = rnd();
+    rad[i] = 1.0 + 0.17 * ln[i];
+    mu[i] = 0.7 + 0.6 * rnd();                       // every grain is a slightly different shape, so they don't all slide as one sheet
     pz[i] = vz[i] = vx[i] = vy[i] = el[i] = 0;
   }
+  if (hStart) relax(5, 1);
   dirty = true;
 }
 
@@ -164,11 +168,85 @@ function makePaper() {
   paper = c; dirty = true;
 }
 
-let dgW = 0, dgH = 0, dens = null, exc = null, rho0 = 1;
-function setupGrid() {
-  dgW = Math.floor(W / DGS) + 3; dgH = Math.floor(H / DGS) + 3;
-  dens = new Float32Array(dgW * dgH); exc = new Float32Array(dgW * dgH);
-  rho0 = Math.max(1, N / ((W * H) / (DGS * DGS)) * 2.4);
+// ---- contacts: grains bump into their neighbours one by one (no fixed grid of pushes, so no rows and columns) ----
+let hW = 0, hH = 0, hStart = null, hCur = null;
+function setupHash() {
+  hW = Math.ceil(W / HCS) + 2; hH = Math.ceil(H / HCS) + 2;
+  hStart = new Int32Array(hW * hH + 1); hCur = new Int32Array(hW * hH);
+}
+function buildHash() {
+  hCur.fill(0);
+  for (let i = 0; i < N; i++) { const c = ((py[i] / HCS) | 0) * hW + ((px[i] / HCS) | 0); hCell[i] = c; hCur[c]++; }
+  let s = 0;
+  for (let c = 0; c < hCur.length; c++) { hStart[c] = s; s += hCur[c]; hCur[c] = hStart[c]; }
+  hStart[hCur.length] = s;
+  for (let i = 0; i < N; i++) hIdx[hCur[hCell[i]]++] = i;
+}
+// is there a grain lying right in the way if grain i moves L px along (ux, uy)?
+function blocked(i, x, y, ux, uy, L) {
+  const ri = rad[i], cx = (x / HCS) | 0, cy = (y / HCS) | 0;
+  for (let yy = cy - 1; yy <= cy + 1; yy++) {
+    if (yy < 0 || yy >= hH) continue;
+    for (let xx = cx - 1; xx <= cx + 1; xx++) {
+      if (xx < 0 || xx >= hW) continue;
+      const cc = yy * hW + xx, end = hStart[cc + 1];
+      for (let k = hStart[cc]; k < end; k++) {
+        const j = hIdx[k];
+        if (j === i || pz[j] > 2) continue;
+        const dx = px[j] - x, dy = py[j] - y, ahead = dx * ux + dy * uy;
+        if (ahead <= 0) continue;
+        const sum = ri + rad[j];
+        if (ahead > sum * 0.75 + L) continue;
+        if (Math.abs(dx * uy - dy * ux) < sum * 0.55) return true;
+      }
+    }
+  }
+  return false;
+}
+// push apart grains that overlap too deeply (after hops, magnets, landings)
+function relax(iters, stiff) {
+  let pushes = 0;
+  for (let it = 0; it < iters; it++) {
+    buildHash();
+    ox.fill(0); oy.fill(0); cnt.fill(0);
+    pushes = 0;
+    for (let i = 0; i < N; i++) {
+      if (pz[i] > 2) continue;                       // a grain in the air passes over the others
+      const xi = px[i], yi = py[i], ri = rad[i], c = hCell[i], cy = (c / hW) | 0, cx = c - cy * hW;
+      for (let yy = cy - 1; yy <= cy + 1; yy++) {
+        if (yy < 0 || yy >= hH) continue;
+        for (let xx = cx - 1; xx <= cx + 1; xx++) {
+          if (xx < 0 || xx >= hW) continue;
+          const cc = yy * hW + xx, end = hStart[cc + 1];
+          for (let k = hStart[cc]; k < end; k++) {
+            const j = hIdx[k];
+            if (j <= i || pz[j] > 2) continue;
+            const dx = px[j] - xi, dy = py[j] - yi, d2 = dx * dx + dy * dy, sum = ri + rad[j];
+            if (d2 >= sum * sum * 0.81) continue;
+            if (cnt[i] < 250) cnt[i]++; if (cnt[j] < 250) cnt[j]++;
+            const rs = sum * 0.72;
+            if (d2 >= rs * rs) continue;
+            let d = Math.sqrt(d2), ux, uy;
+            if (d < 1e-3) { const a = rnd() * TAU; ux = Math.cos(a); uy = Math.sin(a); d = 0; } else { ux = dx / d; uy = dy / d; }
+            const p = (rs - d) * 0.5 * stiff;
+            ox[i] -= ux * p; oy[i] -= uy * p; ox[j] += ux * p; oy[j] += uy * p;
+            if (p > 0.02) pushes++;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      if (ox[i] === 0 && oy[i] === 0) continue;
+      // a grain against the wall keeps its own width from it, so the wall doesn't collect a solid line
+      const m = rad[i] * 0.8 + 1;
+      let x = px[i] + ox[i], y = py[i] + oy[i];
+      if (x < m) x = m + rnd() * 0.6; else if (x > W - m) x = W - m - rnd() * 0.6;
+      if (y < m) y = m + rnd() * 0.6; else if (y > H - m) y = H - m - rnd() * 0.6;
+      px[i] = x; py[i] = y;
+    }
+    if (!pushes) break;
+  }
+  return pushes;
 }
 function resize() {
   const nw = Math.round(window.innerWidth), nh = Math.round(window.innerHeight);
@@ -178,13 +256,13 @@ function resize() {
   if (!N || ow < 60 || oh < 60) {
     const n = clamp(Math.round(W * H / 40), 2500, 9000);
     ls = clamp(Math.sqrt((W * H / n) / 40), 1, 1.8);
-    alloc(n); sprinkle();
+    alloc(n); setupHash(); sprinkle();
   } else {
     const sx = W / ow, sy = H / oh;
     for (let i = 0; i < N; i++) { px[i] = clamp(px[i] * sx, 1.5, W - 1.5); py[i] = clamp(py[i] * sy, 1.5, H - 1.5); }
     for (const m of magnets) { m.x *= sx; m.y *= sy; }
+    setupHash();
   }
-  setupGrid();
   makePaper();
 }
 addEventListener('resize', resize);
@@ -291,7 +369,7 @@ function updateOrientation(dt, t) {
   const k = 1 - Math.exp(-dt / 0.07);
   mix3(sm.g, raw.g, k); norm3(sm.g); mix3(sm.L, raw.L, k); norm3(sm.L); mix3(sm.E, raw.E, k);
   if (!live) { ref[0] = 0; ref[1] = 0; ref[2] = -1; }
-  else if (needLevel) { needLevel = false; ref[0] = sm.g[0]; ref[1] = sm.g[1]; ref[2] = sm.g[2]; }
+  else if (needLevel) { needLevel = false; for (let i = 0; i < 3; i++) { ref[i] = raw.g[i]; sm.g[i] = raw.g[i]; } }
   const rt = relTilt(sm.g, ref), s = devToScr(rt[0], rt[1]);
   tiltS[0] = s[0]; tiltS[1] = s[1];
   // inertia: when the phone is shoved, the grains feel a push the other way (in g)
@@ -400,21 +478,15 @@ function tapKnock(x, y, s) {
 const MX = new Float32Array(16), MY = new Float32Array(16), MQ = new Float32Array(16);
 let wakeT = 0, slideSum = 0, landings = 0;
 function wake(s) { if (s > wakeT) wakeT = s; }
-function buildDensity() {
-  dens.fill(0);
-  for (let i = 0; i < N; i++) dens[((py[i] / DGS) | 0) * dgW + ((px[i] / DGS) | 0)] += 1;
-  const inv = 1 / rho0;
-  for (let c = 0; c < dens.length; c++) { const e = dens[c] * inv - 1; exc[c] = e > 0 ? e : 0; }
-}
 function step(dt) {
   let M = 0;
   for (const m of magnets) if (Math.abs(m.q) > 1 && M < 16) { MX[M] = m.x; MY[M] = m.y; MQ[M] = m.q; M++; }
-  buildDensity();
+  buildHash();
   const ex = earthP[0], ey = earthP[1], gx = effG[0] * GS, gy = effG[1] * GS;
-  const w = clamp(omega, -6, 6), cx = W * 0.5, cy = H * 0.5;
+  const w = clamp(omega, -3, 3), cx = W * 0.5, cy = H * 0.5;
   const ag = Math.min(1, agit), thrS = MUS * GS * (1 - 0.6 * ag), thrK = MUK * GS * (1 - 0.6 * ag);
-  const rotAg = Math.min(1, agit * 1.5), twistSlip = Math.min(0.6, agit * 0.6);
-  const ea = Math.exp(-dt * 3), decV = Math.exp(-dt * 10), Wm = W - 1.5, Hm = H - 1.5;
+  const rotAg = Math.min(1, agit * 1.5);
+  const ea = Math.exp(-dt * 3), decV = Math.exp(-dt * 10);
   let moved = 0, land = 0, slide = 0;
   for (let i = 0; i < N; i++) {
     let x = px[i], y = py[i], t = th[i], z = pz[i], v = vz[i];
@@ -432,49 +504,53 @@ function step(dt) {
       fx = 2 * KM * (Bx * jxx + By * jxy + Bz * jzx); fy = 2 * KM * (Bx * jxy + By * jyy + Bz * jzy);
       const f2 = fx * fx + fy * fy;
       if (f2 > MAXM * MAXM) { const s = MAXM / Math.sqrt(f2); fx *= s; fy *= s; }
-      const core = sstep(Math.sqrt(rmin), 12, 34); fx *= core; fy *= core;
+      const core = sstep(Math.sqrt(rmin), 8, 24); fx *= core; fy *= core;
     }
-    // crowding: a grain can't sit where the paper is already full, so heaps spread instead of collapsing to a line
-    let dc = (x / DGS) | 0, dr = (y / DGS) | 0;
-    if (dc < 1) dc = 1; else if (dc > dgW - 2) dc = dgW - 2;
-    if (dr < 1) dr = 1; else if (dr > dgH - 2) dr = dgH - 2;
-    const di = dr * dgW + dc, e0 = exc[di];
-    // the tray walls count as full, so a heap against a wall builds outward instead of lining up on it
-    const eL = x - DGS < 0 ? e0 * 1.5 : exc[di - 1], eR = x + DGS > W ? e0 * 1.5 : exc[di + 1];
-    const eU = y - DGS < 0 ? e0 * 1.5 : exc[di - dgW], eD = y + DGS > H ? e0 * 1.5 : exc[di + dgW];
-    let qx = (eL - eR) * 0.5 * KP, qy = (eU - eD) * 0.5 * KP;
-    const qm = qx * qx + qy * qy;
-    if (qm > 250000) { const s = 500 / Math.sqrt(qm); qx *= s; qy *= s; }
-    if (e0 > 0.8) { const j = Math.min(4, e0) * 6 * dt; x += randn() * j; y += randn() * j; }
     const fB = b2 / (b2 + B0SQ);
     let dth = Math.atan2(By, Bx) - t; dth -= PI * Math.round(dth / PI);
     if (z > 0 || v > 0) {
       v -= GA * dt; z += v * dt;
-      let ux = vx[i] * ea + (gx * 0.8 + fx * 0.5 + qx * 0.3) * dt, uy = vy[i] * ea + (gy * 0.8 + fy * 0.5 + qy * 0.3) * dt;
+      let ux = vx[i] * ea + (gx * 0.8 + fx * 0.5) * dt, uy = vy[i] * ea + (gy * 0.8 + fy * 0.5) * dt;
       x += ux * dt; y += uy * dt;
       if (z <= 0) { z = 0; v = 0; ux *= 0.3; uy *= 0.3; land++; }
       vx[i] = ux; vy[i] = uy;
       t += dth * (1 - Math.exp(-RA * fB * dt));
       moved++;
     } else {
-      const ux = vx[i], uy = vy[i], dX = gx + fx + qx + ux, dY = gy + fy + qy + uy;
+      const ux = vx[i], uy = vy[i], dX = gx + fx + ux, dY = gy + fy + uy;
       vx[i] = ux * decV; vy[i] = uy * decV;
       const dm = Math.sqrt(dX * dX + dY * dY);
-      // stick until the push beats static friction, then slide against the (smaller) kinetic friction
-      if (dm > thrS) {
-        const sp = dm - thrK, s = sp / dm * dt;
-        x += dX * s; y += dY * s; slide += sp; moved++;
-        // long grains turn to follow the flow unless a field is holding them
+      // stick until the push beats static friction, then slide against the (smaller) kinetic friction;
+      // grains that bump into each other are sorted out by the contact step below (no sticking together)
+      const mi = mu[i];
+      if (dm > thrS * mi) {
+        let sp = Math.min(160, dm - thrK * mi), mx = dX / dm, my = dY / dm;
+        const L = sp * dt;
+        // a grain can't slide through the one in front of it: it rolls off to one side, or it stays put (that is how a heap forms).
+        // a grain that found itself stuck rests a few frames before trying again (cheaper, and heaps settle in little avalanches)
+        if (rest[i] > 0) { rest[i]--; sp = 0; }
+        else if (blocked(i, x, y, mx, my, L)) {
+          const sg = rnd() < 0.5 ? 1 : -1, c = 0.7071, s1 = sg * c;
+          const ax1 = mx * c - my * s1, ay1 = mx * s1 + my * c, ax2 = mx * c + my * s1, ay2 = -mx * s1 + my * c;
+          if (!blocked(i, x, y, ax1, ay1, L * 0.6)) { mx = ax1; my = ay1; sp *= 0.6; }
+          else if (!blocked(i, x, y, ax2, ay2, L * 0.6)) { mx = ax2; my = ay2; sp *= 0.6; }
+          else { sp = 0; rest[i] = 4 + ((rnd() * 5) | 0); }
+        }
+        if (sp > 0) {
+          x += mx * sp * dt + randn() * sp * dt * 0.1; y += my * sp * dt + randn() * sp * dt * 0.1;
+          slide += sp; moved++;
+        }
+        // long grains lean a little toward the flow unless a field is holding them
         let df = Math.atan2(dY, dX) - t; df -= PI * Math.round(df / PI);
-        t += df * Math.min(1, sp * dt * 0.04) * (1 - fB * 0.85);
+        t += df * Math.min(1, sp * dt * 0.012) * (1 - fB * 0.85);
       }
       const rm = Math.min(1, rotAg + Math.max(0, (b2 - BS2) / (BS2 * 2)));
       if (rm > 0.002 && Math.abs(dth) > 0.002) { t += dth * (1 - Math.exp(-RP * fB * rm * dt)); moved++; }
       if (agit > 0.04) { const j = agit * 8 * dt; x += randn() * j; y += randn() * j; moved++; }
     }
-    // twisting the phone: friction carries the grains along with the paper; only loose ones lag behind
+    // twisting the phone: friction carries the grains along with the paper; only grains in mid-air lag behind
     if (w > 0.05 || w < -0.05) {
-      const slip = z > 0 ? 0.9 : twistSlip;
+      const slip = z > 0 ? 0.35 : 0;
       if (slip > 0.001) {
         const ang = w * dt * slip, c = Math.cos(ang), s = Math.sin(ang), rx = x - cx, ry = y - cy;
         x = cx + rx * c - ry * s; y = cy + rx * s + ry * c; t += ang; moved++;
@@ -487,10 +563,12 @@ function step(dt) {
       e += (tgt - e) * (1 - Math.exp(-dt * 10));
     } else if (e > 0) { e *= Math.exp(-dt * 14); if (e < 0.01) e = 0; }
     if (Math.abs(e - el[i]) > 0.002) { el[i] = e; moved++; }
-    if (x < 1.5) x = 1.5; else if (x > Wm) x = Wm;
-    if (y < 1.5) y = 1.5; else if (y > Hm) y = Hm;
+    const wm = rad[i] * 0.8 + 1;
+    if (x < wm) x = wm + rnd() * 0.6; else if (x > W - wm) x = W - wm - rnd() * 0.6;
+    if (y < wm) y = wm + rnd() * 0.6; else if (y > H - wm) y = H - wm - rnd() * 0.6;
     px[i] = x; py[i] = y; th[i] = t; pz[i] = z; vz[i] = v;
   }
+  moved += relax(1, 0.85);
   slideSum = slide; landings += land;
   if (moved) dirty = true;
   return moved;
@@ -520,7 +598,7 @@ function draw() {
   ctx.beginPath();
   for (let i = 0; i < N; i++) {
     const e = el[i];
-    if (e > 0.15) { const L = Math.sin(e) * ln[i] * 1.3 + 0.8; ctx.moveTo(px[i], py[i]); ctx.lineTo(px[i] + sx * L, py[i] + sy * L); continue; }
+    if (e > 0.15) { const L = Math.sin(e) * ln[i] * 0.9 + 0.8; ctx.moveTo(px[i], py[i]); ctx.lineTo(px[i] + sx * L, py[i] + sy * L); continue; }
     const off = 0.8 + pz[i], h = ln[i] * 0.5, c = Math.cos(th[i]) * h, s = Math.sin(th[i]) * h, ox = px[i] + sx * off, oy = py[i] + sy * off;
     ctx.moveTo(ox - c, oy - s); ctx.lineTo(ox + c, oy + s);
   }
@@ -534,7 +612,7 @@ function draw() {
     let v = k * k; v *= v; v *= v;
     let lvl = v * sheen;
     if (sd[i] > 0.88) { const c = Math.cos((t - la) * 3 + sd[i] * 40); if (c > 0.97) lvl += (c - 0.97) * 30 * sheen; }
-    const h = ln[i] * 0.5 * Math.max(0.28, Math.cos(el[i])), c = Math.cos(t) * h, s = Math.sin(t) * h, x = px[i], y = py[i];
+    const h = ln[i] * 0.5 * Math.max(0.45, Math.cos(el[i])), c = Math.cos(t) * h, s = Math.sin(t) * h, x = px[i], y = py[i];
     p0.moveTo(x - c, y - s); p0.lineTo(x + c, y + s);
     if (lvl > 0.35) { const g = lvl > 0.66 ? g2 : g1, q = 0.28 + 0.2 * sd[i]; g.moveTo(x - c * q, y - s * q); g.lineTo(x + c * q, y + s * q); }
   }
