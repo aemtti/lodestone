@@ -705,15 +705,21 @@ function frame() {
 }
 
 resize();
-if (DEMO) {
+function simFor(sec) {
+  const d = 1 / 60;
+  for (let k = 0; k < sec * 60; k++) { const t = now(); if (sens.ori) { sens.t = t; sens.mt = t; } updateOrientation(d, t); updateMagnets(d, t); agit *= Math.exp(-d / 0.3); step(d); }
+  dirty = true;
+}
+if (DEMO && N) {
   introEl.remove(); started = true; startT = now(); desktop = true; hintList = [];
   addMagnet(W * 0.5, H * 0.37, true); addMagnet(W * 0.5, H * 0.63, true);
-  let n = 0; const iv = setInterval(() => { globalKnock(0.6); if (++n >= 8) clearInterval(iv); }, 380);
+  for (let k = 0; k < 7; k++) { simFor(0.4); globalKnock(0.55); }
+  simFor(2);
 }
 window.lodestone = {
   knock: k => globalKnock(k || 1), tap: (x, y) => tapKnock(x, y, 1), pin: (x, y) => addMagnet(x, y, true),
   clear: () => { for (const m of magnets) { m.pinned = false; m.alive = false; } },
-  sim: sec => { const d = 1 / 60; for (let k = 0; k < sec * 60; k++) { const t = now(); sens.t = t; sens.mt = t; updateOrientation(d, t); updateMagnets(d, t); agit *= Math.exp(-d / 0.3); step(d); } dirty = true; },
+  sim: sec => simFor(sec),
   level: () => level(), sprinkle: () => resprinkle(),
   get state() { return { N, W, H, started, desktop, magnets: magnets.map(m => [Math.round(m.q), m.alive, m.pinned]), nan: Array.prototype.some.call(px, v => v !== v), sensors: { ori: sens.ori, abs: sens.abs, motion: sens.motion, gyro: sens.gyro } }; }
 };
