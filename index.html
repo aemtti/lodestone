@@ -20,23 +20,24 @@ canvas{position:absolute;left:0;top:0;display:block;touch-action:none}
 .halo{text-shadow:0 0 5px #ece4d4,0 0 11px #ece4d4,0 0 20px #ece4d4}
 #intro{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;cursor:pointer;transition:opacity 1.8s ease}
 #intro.gone{opacity:0;pointer-events:none}
+.patch{padding:18px 56px;border-radius:50px;background:radial-gradient(closest-side,rgba(233,225,208,.97) 72%,rgba(233,225,208,0))}
 #intro .t{font-size:12px;letter-spacing:.55em;text-indent:.55em;opacity:.8}
 #intro .s{margin-top:14px;font-size:17px;font-style:italic;opacity:.62}
 #intro .p{margin-top:24vh;font-size:17px;animation:breathe 3.2s ease-in-out infinite}
 body.ko #intro .s,body.ko #hint{font-style:normal}
 @keyframes breathe{0%,100%{opacity:.34}50%{opacity:.82}}
 #hint{position:absolute;left:0;right:0;bottom:calc(34px + env(safe-area-inset-bottom,0px));padding:0 30px;text-align:center;font-size:15px;line-height:1.55;font-style:italic;opacity:0;transition:opacity 1.3s ease;pointer-events:none}
-#hint.on{opacity:.82}
+#hint.on{opacity:.9}
+#hint .patch{display:inline-block;padding:16px 40px;border-radius:40px}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="intro" class="halo" role="button" aria-label="tap the paper to begin">
-  <div class="t">LODESTONE</div>
-  <div class="s" id="sub">iron filings on paper</div>
-  <div class="p" id="tap">tap the paper</div>
+  <div class="patch"><div class="t">LODESTONE</div><div class="s" id="sub">iron filings on paper</div></div>
+  <div class="p patch" id="tap">tap the paper</div>
 </div>
-<div id="hint" class="halo" aria-live="polite"></div>
+<div id="hint" class="halo" aria-live="polite"><span class="patch" id="hintTxt"></span></div>
 <noscript><p style="position:absolute;top:40%;width:100%;text-align:center">Lodestone needs JavaScript.</p></noscript>
 <script>
 (() => {
@@ -66,7 +67,7 @@ const TX = KO ? {
   d4: 'Move the mouse to catch the light · arrow keys tilt · scroll twists · space knocks.'
 };
 const $ = id => document.getElementById(id);
-const cv = $('c'), ctx = cv.getContext('2d', { alpha: false }), introEl = $('intro'), hintEl = $('hint');
+const cv = $('c'), ctx = cv.getContext('2d', { alpha: false }), introEl = $('intro'), hintEl = $('hint'), hintTxt = $('hintTxt');
 if (KO) { document.body.classList.add('ko'); document.documentElement.lang = 'ko'; }
 $('sub').textContent = TX.sub; $('tap').textContent = TX.tap;
 
@@ -469,7 +470,7 @@ function hintsFrame(t) {
   for (let i = 0; i < hintList.length; i++) {
     const h = hintList[i];
     if (h.done()) { hintList.splice(i, 1); i--; continue; }
-    if (h.ready(s)) { hintOn = h; hintEl.textContent = h.txt; hintEl.classList.add('on'); hintHideAt = t + 6500; break; }
+    if (h.ready(s)) { hintOn = h; hintTxt.textContent = h.txt; hintEl.classList.add('on'); hintHideAt = t + 6500; break; }
   }
 }
 
