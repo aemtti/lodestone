@@ -6,6 +6,8 @@ Iron filings on a sheet of paper, for a phone.
 
 Rest a finger on the paper and a magnet appears beneath it. Tap the paper (or knock the phone) and the filings jump and settle along the field. Two fingers make two poles. Tilt to pour, twist to swirl. With no magnet near, a tap lets them lie down toward the real magnetic north, read from the phone's compass.
 
+Two small buttons (top right): **◎** makes the way you are holding the phone right now "level" (the tilt reference never drifts on its own), and **∴** sprinkles fresh filings when they have all ended up in one place.
+
 Everything (image, light, sound) is generated in code in a single `index.html`. No libraries, no assets.
 
 Sensors used: device orientation (absolute when available, for north and the light), device motion (knocks, gyroscope twist), touch contact size (magnet strength), vibration, Web Audio, screen wake lock.
