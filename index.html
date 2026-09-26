@@ -508,9 +508,12 @@ function draw() {
   ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
   for (const m of magnets) {
     const s = Math.min(1.2, Math.abs(m.q) / Q0); if (s < 0.03) continue;
-    const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 46);
-    g.addColorStop(0, `rgba(70,50,30,${0.10 * s})`); g.addColorStop(1, 'rgba(70,50,30,0)');
-    ctx.fillStyle = g; ctx.fillRect(m.x - 46, m.y - 46, 92, 92);
+    // a faint warmth for north, a faint chill for south, showing through the paper
+    const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 58);
+    g.addColorStop(0, m.sign > 0 ? `rgba(150,50,30,${0.12 * s})` : `rgba(40,70,140,${0.12 * s})`);
+    g.addColorStop(0.45, m.sign > 0 ? `rgba(120,60,40,${0.05 * s})` : `rgba(50,70,120,${0.05 * s})`);
+    g.addColorStop(1, 'rgba(70,50,30,0)');
+    ctx.fillStyle = g; ctx.fillRect(m.x - 58, m.y - 58, 116, 116);
   }
   const lz = Math.max(lightP[2], 0.22), sx = -lightP[0] / lz, sy = -lightP[1] / lz;
   ctx.lineCap = 'round';
@@ -662,7 +665,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---- loop ----
-let lastT = now();
+let lastT = now(), lastPourBuzz = 0;
 function frame() {
   const t = now();
   let dt = (t - lastT) / 1000; lastT = t;
@@ -683,8 +686,11 @@ function frame() {
     if (wakeT > 0) { if (step(dt)) wake(0.2); wakeT -= dt; }
     hintsFrame(t);
   }
+  // you can feel a heavy pour in your hand
+  const pour = Math.min(1, slideSum / (N * 10));
+  if (started && pour > 0.22 && t - lastPourBuzz > 120) { buzz(Math.round(3 + 7 * pour)); lastPourBuzz = t; }
   if (aok()) {
-    const at = AC.currentTime, lvl = Math.min(1, slideSum / (N * 10));
+    const at = AC.currentTime, lvl = pour;
     hissG.gain.setTargetAtTime(0.3 * lvl, at, 0.07);
     hissF.frequency.setTargetAtTime(1800 + 3200 * lvl, at, 0.12);
     if (landings > 0) {
