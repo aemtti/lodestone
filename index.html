@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#d8cfbd">
+<title>Lodestone</title>
+<meta name="description" content="Iron filings on a sheet of paper. Your fingers are magnets beneath it. Tap the paper and the filings find the field.">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#d8cfbd;overscroll-behavior:none}
+body{position:fixed;inset:0;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;
+  font-family:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua","Noto Serif","Noto Serif KR","Nanum Myeongjo",Georgia,serif;color:#2a2521}
+canvas{position:absolute;left:0;top:0;display:block;touch-action:none}
+.halo{text-shadow:0 0 5px #ece4d4,0 0 11px #ece4d4,0 0 20px #ece4d4}
+#intro{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;cursor:pointer;transition:opacity 1.8s ease}
+#intro.gone{opacity:0;pointer-events:none}
+#intro .t{font-size:12px;letter-spacing:.55em;text-indent:.55em;opacity:.8}
+#intro .s{margin-top:14px;font-size:17px;font-style:italic;opacity:.62}
+#intro .p{margin-top:24vh;font-size:17px;animation:breathe 3.2s ease-in-out infinite}
+body.ko #intro .s,body.ko #hint{font-style:normal}
+@keyframes breathe{0%,100%{opacity:.34}50%{opacity:.82}}
+#hint{position:absolute;left:0;right:0;bottom:calc(34px + env(safe-area-inset-bottom,0px));padding:0 30px;text-align:center;font-size:15px;line-height:1.55;font-style:italic;opacity:0;transition:opacity 1.3s ease;pointer-events:none}
+#hint.on{opacity:.82}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="intro" class="halo" role="button" aria-label="tap the paper to begin">
+  <div class="t">LODESTONE</div>
+  <div class="s" id="sub">iron filings on paper</div>
+  <div class="p" id="tap">tap the paper</div>
+</div>
+<div id="hint" class="halo" aria-live="polite"></div>
+<noscript><p style="position:absolute;top:40%;width:100%;text-align:center">Lodestone needs JavaScript.</p></noscript>
+<script>
+(() => {
+'use strict';
+const KO = /^ko\b/i.test(navigator.language || '');
+const TX = KO ? {
+  sub: '종이 위의 쇳가루', tap: '종이를 톡 두드려 보세요',
+  h1: '종이에 손가락을 대고 있어 보세요. 그 아래에 자석이 있어요.',
+  h2: '그대로 둔 채, 다른 손가락으로 근처를 톡톡 두드려 보세요.',
+  h3: '두 손가락이면, 두 개의 극.',
+  h4: '기울이면 쏟아지고, 빙글 돌리면 소용돌이쳐요. 폰을 톡 치면 들썩여요.',
+  h5: '자석 없이 두드리면, 쇳가루는 진짜 북쪽을 향해 누워요.',
+  d1: '종이를 꾹 누르고 있어 보세요. 그 아래에 자석이 있어요.',
+  d2: '우클릭으로 자석을 놓아두고, 그 둘레를 톡톡 클릭해 보세요.',
+  d3: '두 개를 놓으면, 두 개의 극.',
+  d4: '마우스로 빛을 비추고 · 방향키로 기울이고 · 스크롤로 돌리고 · 스페이스로 두드려요.'
+} : {
+  sub: 'iron filings on paper', tap: 'tap the paper',
+  h1: 'Rest a finger on the paper. A magnet waits beneath it.',
+  h2: 'Keep it there, and tap nearby with another finger.',
+  h3: 'Two fingers, two poles.',
+  h4: 'Tilt to pour. Twist to swirl. Knock the phone to shake them loose.',
+  h5: 'Tapped with no magnet near, they lie down toward the real north.',
+  d1: 'Press and hold on the paper. A magnet waits beneath it.',
+  d2: 'Right-click to leave a magnet, then click around it.',
+  d3: 'Leave two, and they become two poles.',
+  d4: 'Move the mouse to catch the light · arrow keys tilt · scroll twists · space knocks.'
+};
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d', { alpha: false }), introEl = $('intro'), hintEl = $('hint');
+if (KO) { document.body.classList.add('ko'); document.documentElement.lang = 'ko'; }
+$('sub').textContent = TX.sub; $('tap').textContent = TX.tap;
+
+const PI = Math.PI, TAU = PI * 2, D2R = PI / 180, rnd = Math.random;
+const randn = () => (rnd() + rnd() + rnd() - 1.5) * 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const sstep = (x, a, b) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const now = () => performance.now();
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+const DEMO = /demo/.test(location.hash);
+const COARSE = matchMedia('(pointer: coarse)').matches;
+
+// ---- physical feel ----
+const Q0 = 1.1e5, DEP = 26, DEP2 = DEP * DEP;          // magnet strength, depth below the paper (px)
+const EARTH = 1.0, INCL = 53 * D2R;                     // Earth's field, inclination (Korea ~53°)
+const B0SQ = 2.5, BS2 = 64;                             // alignment softness, field that beats friction
+const RA = 30, RP = 14;                                 // alignment rates (in air / on paper)
+const KM = 3, MAXM = 380;                               // magnetic pull
+const GS = 420, MU_G = 0.2, MU = MU_G * GS, GA = 2600;  // gravity slide, friction, hop gravity
+const HOLD = 130, MAXMAG = 6;
+
+let W = 0, H = 0, N = 0, ls = 1;
+let px, py, th, ln, pz, vz, vx, vy, sd;
+let agit = 0, dirty = true;
+const magnets = [];
+
+function alloc(n) {
+  N = n;
+  px = new Float32Array(n); py = new Float32Array(n); th = new Float32Array(n); ln = new Float32Array(n);
+  pz = new Float32Array(n); vz = new Float32Array(n); vx = new Float32Array(n); vy = new Float32Array(n); sd = new Float32Array(n);
+}
+function sprinkle() {
+  const a1 = rnd() * TAU, a2 = rnd() * TAU, a3 = rnd() * TAU, f1 = 0.006 + rnd() * 0.006, f2 = 0.008 + rnd() * 0.008;
+  for (let i = 0; i < N; i++) {
+    let x = 0, y = 0;
+    for (let k = 0; k < 8; k++) {
+      x = rnd() * W; y = rnd() * H;
+      const d = 0.62 + 0.26 * Math.sin(x * f1 + a1) * Math.sin(y * f2 + a2) + 0.14 * Math.sin((x - y) * 0.013 + a3);
+      if (rnd() < d) break;
+    }
+    px[i] = clamp(x, 2, W - 2); py[i] = clamp(y, 2, H - 2);
+    th[i] = rnd() * PI; ln[i] = (2.6 + 5.0 * Math.pow(rnd(), 1.6)) * ls; sd[i] = rnd();
+    pz[i] = vz[i] = vx[i] = vy[i] = 0;
+  }
+  dirty = true;
+}
+
+// ---- paper ----
+let paper = null;
+function makePaper() {
+  const s = Math.min(DPR, 1.5), w = Math.max(2, Math.round(W * s)), h = Math.max(2, Math.round(H * s));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = '#e8e0cf'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 36; i++) {
+    const x = rnd() * w, y = rnd() * h, r = (40 + rnd() * 170) * s, gr = g.createRadialGradient(x, y, 0, x, y, r), dk = rnd() < 0.5;
+    gr.addColorStop(0, dk ? 'rgba(120,98,66,0.04)' : 'rgba(255,252,242,0.06)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  g.lineCap = 'round';
+  const nf = (w * h) / 900;
+  for (let i = 0; i < nf; i++) {
+    const x = rnd() * w, y = rnd() * h, a = rnd() * TAU, l = (6 + rnd() * 22) * s;
+    g.strokeStyle = rnd() < 0.5 ? 'rgba(110,88,58,0.07)' : 'rgba(255,255,250,0.12)';
+    g.lineWidth = (0.4 + rnd() * 0.7) * s;
+    g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + Math.cos(a + 0.5) * l * 0.5, y + Math.sin(a + 0.5) * l * 0.5, x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+  }
+  const id = g.getImageData(0, 0, w, h), d = id.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (rnd() - 0.5) * 10; d[i] += n; d[i + 1] += n; d[i + 2] += n * 0.9; }
+  g.putImageData(id, 0, 0);
+  // the tray lip: a soft inner shadow at the edges
+  const e = 18 * s;
+  const sides = [[0, 0, w, e, 0, 0, 0, e], [0, h - e, w, e, 0, h, 0, h - e], [0, 0, e, h, 0, 0, e, 0], [w - e, 0, e, h, w, 0, w - e, 0]];
+  for (const q of sides) { const gr = g.createLinearGradient(q[4], q[5], q[6], q[7]); gr.addColorStop(0, 'rgba(60,44,26,0.30)'); gr.addColorStop(1, 'rgba(60,44,26,0)'); g.fillStyle = gr; g.fillRect(q[0], q[1], q[2], q[3]); }
+  paper = c; dirty = true;
+}
+
+function resize() {
+  const nw = Math.round(window.innerWidth), nh = Math.round(window.innerHeight);
+  if (nw < 60 || nh < 60 || (nw === W && nh === H)) return;
+  const ow = W, oh = H; W = nw; H = nh;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR); cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  if (!N || ow < 60 || oh < 60) {
+    const n = clamp(Math.round(W * H / 40), 2500, 9000);
+    ls = clamp(Math.sqrt((W * H / n) / 40), 1, 1.8);
+    alloc(n); sprinkle();
+  } else {
+    const sx = W / ow, sy = H / oh;
+    for (let i = 0; i < N; i++) { px[i] = clamp(px[i] * sx, 1.5, W - 1.5); py[i] = clamp(py[i] * sy, 1.5, H - 1.5); }
+    for (const m of magnets) { m.x *= sx; m.y *= sy; }
+  }
+  makePaper();
+}
+addEventListener('resize', resize);
+
+// ---- light and the real world ----
+function lightModel() {
+  const d = new Date(), h = d.getHours() + d.getMinutes() / 60;
+  if (h >= 6.5 && h <= 18.5) {
+    const t = (h - 6) / 12, az = (90 + 180 * t) * D2R, e = (24 + 36 * Math.sin(PI * t)) * D2R;
+    return { v: [Math.cos(e) * Math.sin(az), Math.cos(e) * Math.cos(az), Math.sin(e)], night: false };
+  }
+  const az = 160 * D2R, e = 62 * D2R;
+  return { v: [Math.cos(e) * Math.sin(az), Math.cos(e) * Math.cos(az), Math.sin(e)], night: true };
+}
+let lightW = lightModel();
+setInterval(() => { lightW = lightModel(); }, 300000);
+const earthW = [0, EARTH * Math.cos(INCL), -EARTH * Math.sin(INCL)];
+
+// world (east, north, up) -> device frame, W3C Z-X'-Y'' angles
+function w2d(v, a, b, g) {
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+  const x1 = ca * v[0] + sa * v[1], y1 = -sa * v[0] + ca * v[1], z1 = v[2];
+  const y2 = cb * y1 + sb * z1, z2 = -sb * y1 + cb * z1;
+  return [cg * x1 - sg * z2, y2, sg * x1 + cg * z2];
+}
+const sens = { ori: false, abs: false, t: 0, motion: false, peak: 0, floor: 0.15, gyro: false, rz: 0, rt: 0, hx: 0, hy: 0, hz: 0, lastKnock: 0, init: false };
+const raw = { g: [0, 0, -1], L: [0, 0, 1], E: [0, 0.6, -0.8] }, sm = { g: [0, 0, -1], L: [0, 0, 1], E: [0, 0.6, -0.8] }, base = [0, 0, -1];
+function fromAngles(a, b, g) { raw.g = w2d([0, 0, -1], a, b, g); raw.L = w2d(lightW.v, a, b, g); raw.E = w2d(earthW, a, b, g); }
+function onOrient(e, isAbs) {
+  if (e.beta == null || e.gamma == null) return;
+  let a = e.alpha;
+  const ch = e.webkitCompassHeading;
+  if (typeof ch === 'number' && isFinite(ch)) { a = 360 - ch; isAbs = true; }
+  if (isAbs && a != null) sens.abs = true; else if (sens.abs) return;
+  sens.ori = true; sens.t = now();
+  fromAngles((a || 0) * D2R, e.beta * D2R, e.gamma * D2R);
+}
+addEventListener('deviceorientationabsolute', e => onOrient(e, true));
+addEventListener('deviceorientation', e => onOrient(e, !!e.absolute));
+addEventListener('devicemotion', e => {
+  let m = -1;
+  const a = e.acceleration;
+  if (a && a.x != null) m = Math.hypot(a.x, a.y, a.z || 0);
+  else {
+    const g = e.accelerationIncludingGravity;
+    if (g && g.x != null) {
+      sens.hx += (g.x - sens.hx) * 0.1; sens.hy += (g.y - sens.hy) * 0.1; sens.hz += ((g.z || 0) - sens.hz) * 0.1;
+      m = Math.hypot(g.x - sens.hx, g.y - sens.hy, (g.z || 0) - sens.hz);
+    }
+  }
+  if (m >= 0) { sens.motion = true; if (m > sens.peak) sens.peak = m; if (m < sens.floor * 3 + 0.4) sens.floor += (m - sens.floor) * 0.01; }
+  const r = e.rotationRate;
+  if (r && r.alpha != null) { sens.gyro = true; sens.rz = r.alpha; sens.rt = now(); }
+});
+
+const virt = { beta: 0, gamma: 0, alpha: 0, omega: 0, mb: 0, mg: 0 };
+const keys = new Set();
+let omega = 0, face = 1;
+const effG = [0, 0], lightP = [0, 0, 1], earthP = [0, -0.6];
+function scrAngle() { return (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0); }
+function devToScr(x, y) { const a = scrAngle() * D2R, c = Math.cos(a), s = Math.sin(a); return [x * c - y * s, -(x * s + y * c)]; }
+function mix3(o, t, k) { o[0] += (t[0] - o[0]) * k; o[1] += (t[1] - o[1]) * k; o[2] += (t[2] - o[2]) * k; }
+function norm3(o) { const l = Math.hypot(o[0], o[1], o[2]) || 1; o[0] /= l; o[1] /= l; o[2] /= l; }
+function updateOrientation(dt, t) {
+  const live = sens.ori && t - sens.t < 1500;
+  if (!live) {
+    const kb = 1 - Math.exp(-dt / 0.25);
+    let tb = 0, tg = 0;
+    if (keys.has('ArrowUp') || keys.has('w')) tb -= 24;
+    if (keys.has('ArrowDown') || keys.has('s')) tb += 24;
+    if (keys.has('ArrowLeft') || keys.has('a')) tg -= 24;
+    if (keys.has('ArrowRight') || keys.has('d')) tg += 24;
+    if (!started) { tg += 5 * Math.sin(t / 2300); tb += 4 * Math.sin(t / 3100); }
+    virt.beta += (tb - virt.beta) * kb; virt.gamma += (tg - virt.gamma) * kb;
+    virt.omega *= Math.exp(-dt * 2.5); virt.alpha += virt.omega * dt;
+    const va = virt.alpha, vb = virt.beta * D2R, vg = virt.gamma * D2R;
+    raw.g = w2d([0, 0, -1], va, vb, vg);
+    raw.L = w2d(lightW.v, va, vb + virt.mb * D2R, vg + virt.mg * D2R);
+    raw.E = w2d(earthW, va, vb, vg);
+    omega = virt.omega;
+  } else {
+    const target = (sens.gyro && t - sens.rt < 500) ? sens.rz * D2R : 0;
+    omega += (target - omega) * (1 - Math.exp(-dt / 0.05));
+  }
+  if (live && !sens.init) { sens.init = true; for (let i = 0; i < 3; i++) { sm.g[i] = raw.g[i]; base[i] = raw.g[i]; sm.L[i] = raw.L[i]; sm.E[i] = raw.E[i]; } }
+  const k = 1 - Math.exp(-dt / 0.07);
+  mix3(sm.g, raw.g, k); norm3(sm.g); mix3(sm.L, raw.L, k); norm3(sm.L); mix3(sm.E, raw.E, k);
+  if (live) { mix3(base, sm.g, 1 - Math.exp(-dt / 7)); norm3(base); } else { base[0] = 0; base[1] = 0; base[2] = -1; }
+  const s = devToScr(sm.g[0] - base[0], sm.g[1] - base[1]); effG[0] = s[0]; effG[1] = s[1];
+  const l = devToScr(sm.L[0], sm.L[1]);
+  face = sstep(sm.L[2], -0.05, 0.35);
+  const lz = Math.max(sm.L[2], 0.12), ll = Math.hypot(l[0], l[1], lz);
+  const nl0 = l[0] / ll, nl1 = l[1] / ll, nl2 = lz / ll;
+  if (Math.abs(nl0 - lightP[0]) + Math.abs(nl1 - lightP[1]) > 0.004) dirty = true;
+  lightP[0] = nl0; lightP[1] = nl1; lightP[2] = nl2;
+  const e = devToScr(sm.E[0], sm.E[1]); earthP[0] = e[0]; earthP[1] = e[1];
+}
+
+// ---- sound ----
+let AC = null, master = null, hissG = null, hissF = null, noiseBuf = null, tickBuf = null;
+function audioInit() {
+  if (AC) return;
+  const Ctx = window.AudioContext || window.webkitAudioContext; if (!Ctx) return;
+  try { AC = new Ctx(); } catch (_) { AC = null; return; }
+  const comp = AC.createDynamicsCompressor();
+  comp.threshold.value = -18; comp.knee.value = 10; comp.ratio.value = 5; comp.attack.value = 0.002; comp.release.value = 0.18;
+  master = AC.createGain(); master.gain.value = 0.9; master.connect(comp); comp.connect(AC.destination);
+  const sr = AC.sampleRate, len = sr * 2;
+  noiseBuf = AC.createBuffer(1, len, sr);
+  const d = noiseBuf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < len; i++) { const w = rnd() * 2 - 1; b0 = 0.99765 * b0 + w * 0.099046; b1 = 0.963 * b1 + w * 0.2965164; b2 = 0.57 * b2 + w * 1.0526913; d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.16; }
+  const src = AC.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+  const hp = AC.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 650;
+  hissF = AC.createBiquadFilter(); hissF.type = 'bandpass'; hissF.frequency.value = 2600; hissF.Q.value = 0.6;
+  hissG = AC.createGain(); hissG.gain.value = 0;
+  src.connect(hp); hp.connect(hissF); hissF.connect(hissG); hissG.connect(master); src.start();
+  const tl = Math.max(32, Math.round(sr * 0.016));
+  tickBuf = AC.createBuffer(1, tl, sr);
+  const td = tickBuf.getChannelData(0);
+  for (let i = 0; i < tl; i++) td[i] = (rnd() * 2 - 1) * Math.exp(-i / (tl * 0.13));
+}
+const aok = () => AC && AC.state === 'running';
+function burst(t, dur, type, f, q, gain) {
+  const s = AC.createBufferSource(); s.buffer = noiseBuf;
+  const b = AC.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q;
+  const g = AC.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.004); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(b); b.connect(g); g.connect(master); s.start(t, rnd() * 1.5); s.stop(t + dur + 0.03);
+}
+function tone(t, f0, f1, dur, gain, type) {
+  const o = AC.createOscillator(); o.type = type || 'sine';
+  o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  const g = AC.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.03);
+}
+function tick(t, f, gain) {
+  const s = AC.createBufferSource(); s.buffer = tickBuf; s.playbackRate.value = 0.7 + rnd() * 0.8;
+  const b = AC.createBiquadFilter(); b.type = 'bandpass'; b.frequency.value = f; b.Q.value = 5;
+  const g = AC.createGain(); g.gain.value = gain;
+  s.connect(b); b.connect(g); g.connect(master); s.start(t);
+}
+function thump(k) { if (!aok()) return; const t = AC.currentTime + 0.005, s = Math.min(1, k); tone(t, 105, 46, 0.2, 0.3 * s); burst(t, 0.12 + 0.1 * s, 'bandpass', 2300, 0.8, 0.1 * s + 0.02); }
+function paperTap(s) { if (!aok()) return; const t = AC.currentTime + 0.003, v = Math.min(1.3, s); burst(t, 0.06, 'lowpass', 1500, 0.7, 0.2 * v); tone(t, 150, 80, 0.08, 0.1 * v); }
+function clack(v) { if (!aok()) return; const t = AC.currentTime + 0.003; burst(t, 0.03, 'bandpass', 3400, 2.2, 0.09 * v); tone(t, 620, 300, 0.05, 0.045 * v, 'triangle'); }
+function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (_) {} }
+
+// ---- magnets, taps, knocks ----
+const stats = { magnet: false, tapMag: false, two: false };
+function pickSign() { let s = 0; for (const m of magnets) if (m.alive || m.pinned) s += m.sign; return s > 0 ? -1 : 1; }
+function addMagnet(x, y, pinned) { const m = { x, y, q: 0, sign: pickSign(), size: 0.5, alive: true, pinned, t0: now(), on: false }; magnets.push(m); wake(0.5); return m; }
+function updateMagnets(dt, t) {
+  let active = 0;
+  for (let i = magnets.length - 1; i >= 0; i--) {
+    const m = magnets[i];
+    let target = 0;
+    if (m.pinned) target = m.sign * Q0;
+    else if (m.alive && t - m.t0 > HOLD) target = m.sign * Q0 * (0.8 + 0.45 * m.size);
+    m.q += (target - m.q) * (1 - Math.exp(-dt / (target === 0 ? 0.05 : 0.08)));
+    const aq = Math.abs(m.q);
+    if (!m.on && aq > 0.45 * Q0) { m.on = true; clack(1); buzz(8); stats.magnet = true; }
+    if (m.on && !m.alive && !m.pinned && aq < 0.2 * Q0) { m.on = false; clack(0.4); }
+    if (aq > 0.3 * Q0) active++;
+    if (!m.alive && !m.pinned && aq < 30) magnets.splice(i, 1);
+  }
+  if (active >= 2) stats.two = true;
+  return active;
+}
+function globalKnock(k) {
+  agit = Math.min(2, agit + k * 0.8);
+  for (let i = 0; i < N; i++) { vz[i] += k * (70 + 220 * rnd()); th[i] += randn() * 0.7 * k; vx[i] += randn() * 35 * k; vy[i] += randn() * 35 * k; }
+  thump(k); wake(1);
+}
+function tapKnock(x, y, s) {
+  const R = 95, R2 = 2 * R * R, lim = 9 * R * R;
+  for (let i = 0; i < N; i++) {
+    const dx = px[i] - x, dy = py[i] - y, d2 = dx * dx + dy * dy;
+    if (d2 > lim) continue;
+    const w = Math.exp(-d2 / R2) * s, d = Math.sqrt(d2) + 1;
+    vz[i] += w * (90 + 170 * rnd());
+    vx[i] += dx / d * 40 * w + randn() * 18 * w; vy[i] += dy / d * 40 * w + randn() * 18 * w;
+    th[i] += randn() * 0.6 * w;
+  }
+  agit = Math.min(2, agit + 0.15 * s);
+  for (const m of magnets) if (Math.abs(m.q) > 0.3 * Q0) { stats.tapMag = true; break; }
+  paperTap(s); wake(1);
+}
+
+// ---- simulation ----
+const MX = new Float32Array(16), MY = new Float32Array(16), MQ = new Float32Array(16);
+let wakeT = 0, slideSum = 0, landings = 0;
+function wake(s) { if (s > wakeT) wakeT = s; }
+function step(dt) {
+  let M = 0;
+  for (const m of magnets) if (Math.abs(m.q) > 1 && M < 16) { MX[M] = m.x; MY[M] = m.y; MQ[M] = m.q; M++; }
+  const ex = earthP[0], ey = earthP[1], gx = effG[0] * GS, gy = effG[1] * GS;
+  const w = omega, aw = Math.abs(w), tb = Math.max(0, aw - 2) * 0.35, cent = w * w * 0.02, cx = W * 0.5, cy = H * 0.5;
+  const thr = MU * Math.max(0, 1 - agit * 1.3), rotAg = Math.min(1, agit * 1.5);
+  const ea = Math.exp(-dt * 3), decV = Math.exp(-dt * 10), Wm = W - 1.5, Hm = H - 1.5;
+  let moved = 0, land = 0, slide = 0;
+  for (let i = 0; i < N; i++) {
+    let x = px[i], y = py[i], t = th[i], z = pz[i], v = vz[i];
+    let Bx = ex, By = ey, Bz = 0, jxx = 0, jxy = 0, jyy = 0, jzx = 0, jzy = 0, rmin = 1e9;
+    for (let k = 0; k < M; k++) {
+      const dx = x - MX[k], dy = y - MY[k], rr = dx * dx + dy * dy, r2 = rr + DEP2;
+      if (rr < rmin) rmin = rr;
+      const ir = 1 / Math.sqrt(r2), ir2 = ir * ir, f = MQ[k] * ir2 * ir, c = -3 * f * ir2;
+      Bx += dx * f; By += dy * f; Bz += DEP * f;
+      jxx += f + c * dx * dx; jxy += c * dx * dy; jyy += f + c * dy * dy; jzx += c * DEP * dx; jzy += c * DEP * dy;
+    }
+    const b2 = Bx * Bx + By * By;
+    let fx = 0, fy = 0;
+    if (M) {
+      fx = 2 * KM * (Bx * jxx + By * jxy + Bz * jzx); fy = 2 * KM * (Bx * jxy + By * jyy + Bz * jzy);
+      const f2 = fx * fx + fy * fy;
+      if (f2 > MAXM * MAXM) { const s = MAXM / Math.sqrt(f2); fx *= s; fy *= s; }
+      const core = sstep(Math.sqrt(rmin), 12, 34); fx *= core; fy *= core;
+    }
+    const fB = b2 / (b2 + B0SQ);
+    let dth = Math.atan2(By, Bx) - t; dth -= PI * Math.round(dth / PI);
+    if (z > 0 || v > 0) {
+      v -= GA * dt; z += v * dt;
+      let ux = vx[i] * ea + (gx * 0.6 + fx * 0.5) * dt, uy = vy[i] * ea + (gy * 0.6 + fy * 0.5) * dt;
+      x += ux * dt; y += uy * dt;
+      if (z <= 0) { z = 0; v = 0; ux *= 0.25; uy *= 0.25; land++; }
+      vx[i] = ux; vy[i] = uy;
+      t += dth * (1 - Math.exp(-RA * fB * dt));
+      moved++;
+    } else {
+      const ux = vx[i], uy = vy[i], dX = gx + fx + ux, dY = gy + fy + uy;
+      vx[i] = ux * decV; vy[i] = uy * decV;
+      const dm = Math.sqrt(dX * dX + dY * dY);
+      if (dm > thr) { const s = (dm - thr) / dm * dt; x += dX * s; y += dY * s; slide += dm - thr; moved++; }
+      const rm = Math.min(1, rotAg + Math.max(0, (b2 - BS2) / (BS2 * 2)));
+      if (rm > 0.002 && Math.abs(dth) > 0.002) { t += dth * (1 - Math.exp(-RP * fB * rm * dt)); moved++; }
+      if (agit > 0.04) { const j = agit * 14 * dt; x += randn() * j; y += randn() * j; moved++; }
+    }
+    if (aw > 0.05) {
+      const slip = z > 0 ? 1 : Math.min(1, agit * 1.2 + tb);
+      if (slip > 0.001) {
+        const ang = w * dt * slip, c = Math.cos(ang), s = Math.sin(ang), rx = x - cx, ry = y - cy, g2 = 1 + cent * slip * dt;
+        x = cx + (rx * c - ry * s) * g2; y = cy + (rx * s + ry * c) * g2; t += ang; moved++;
+      }
+    }
+    if (x < 1.5) x = 1.5; else if (x > Wm) x = Wm;
+    if (y < 1.5) y = 1.5; else if (y > Hm) y = Hm;
+    px[i] = x; py[i] = y; th[i] = t; pz[i] = z; vz[i] = v;
+  }
+  slideSum = slide; landings += land;
+  if (moved) dirty = true;
+  return moved;
+}
+
+// ---- drawing ----
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.drawImage(paper, 0, 0, W, H);
+  const night = lightW.night, lx = W * 0.5 + lightP[0] * W * 1.2, ly = H * 0.5 + lightP[1] * H * 0.9;
+  const gr = ctx.createRadialGradient(lx, ly, 0, lx, ly, Math.hypot(W, H) * 0.95);
+  gr.addColorStop(0, night ? `rgba(255,214,160,${0.26 * face})` : `rgba(255,251,238,${0.2 * face})`);
+  gr.addColorStop(0.5, 'rgba(255,250,236,0)');
+  gr.addColorStop(1, `rgba(40,28,14,${(night ? 0.34 : 0.2) + 0.25 * (1 - face)})`);
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+  for (const m of magnets) {
+    const s = Math.min(1.2, Math.abs(m.q) / Q0); if (s < 0.03) continue;
+    const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 46);
+    g.addColorStop(0, `rgba(70,50,30,${0.10 * s})`); g.addColorStop(1, 'rgba(70,50,30,0)');
+    ctx.fillStyle = g; ctx.fillRect(m.x - 46, m.y - 46, 92, 92);
+  }
+  const lz = Math.max(lightP[2], 0.22), sx = -lightP[0] / lz, sy = -lightP[1] / lz;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const off = 0.8 + pz[i], h = ln[i] * 0.5, c = Math.cos(th[i]) * h, s = Math.sin(th[i]) * h, ox = px[i] + sx * off, oy = py[i] + sy * off;
+    ctx.moveTo(ox - c, oy - s); ctx.lineTo(ox + c, oy + s);
+  }
+  ctx.strokeStyle = `rgba(78,56,34,${0.22 * (0.5 + 0.5 * face)})`; ctx.lineWidth = 1.6; ctx.stroke();
+  const la = Math.atan2(lightP[1], lightP[0]), tilt = Math.hypot(lightP[0], lightP[1]);
+  const sheen = (0.3 + 0.7 * clamp(tilt * 1.5, 0, 1)) * face;
+  const p0 = new Path2D(), p1 = new Path2D(), p2 = new Path2D();
+  for (let i = 0; i < N; i++) {
+    const t = th[i], k = Math.abs(Math.sin(t - la));
+    let v = k * k; v *= v; v *= v;
+    let lvl = v * sheen;
+    if (sd[i] > 0.88) { const c = Math.cos((t - la) * 3 + sd[i] * 40); if (c > 0.97) lvl += (c - 0.97) * 30 * sheen; }
+    const h = ln[i] * 0.5, c = Math.cos(t) * h, s = Math.sin(t) * h, x = px[i], y = py[i];
+    const p = lvl > 0.62 ? p2 : lvl > 0.3 ? p1 : p0;
+    p.moveTo(x - c, y - s); p.lineTo(x + c, y + s);
+  }
+  ctx.lineWidth = 1.05;
+  ctx.strokeStyle = 'rgb(38,35,32)'; ctx.stroke(p0);
+  ctx.strokeStyle = night ? 'rgb(112,98,82)' : 'rgb(98,95,90)'; ctx.stroke(p1);
+  ctx.strokeStyle = night ? 'rgb(236,214,178)' : 'rgb(222,220,214)'; ctx.stroke(p2);
+  dirty = false;
+}
+
+// ---- hints ----
+let hintList = null, hintOn = null, hintHideAt = 0, hintNextAt = 0, startT = 0, started = false, starting = false, desktop = false;
+function hintsFrame(t) {
+  if (!hintList) { if (t - startT < 1300) return; const d = desktop; hintList = [
+    { txt: d ? TX.d1 : TX.h1, ready: s => s > 2.5, done: () => stats.magnet },
+    { txt: d ? TX.d2 : TX.h2, ready: () => stats.magnet, done: () => stats.tapMag },
+    { txt: d ? TX.d3 : TX.h3, ready: s => stats.tapMag || s > 45, done: () => stats.two },
+    { txt: d ? TX.d4 : TX.h4, ready: s => s > (d ? 14 : 28), done: () => false },
+    { txt: TX.h5, ready: s => s > 60 && sens.abs, done: () => false }]; }
+  const s = (t - startT) / 1000;
+  if (hintOn) { if (t > hintHideAt || hintOn.done()) { hintEl.classList.remove('on'); hintList.splice(hintList.indexOf(hintOn), 1); hintOn = null; hintNextAt = t + 3200; } return; }
+  if (t < hintNextAt) return;
+  for (let i = 0; i < hintList.length; i++) {
+    const h = hintList[i];
+    if (h.done()) { hintList.splice(i, 1); i--; continue; }
+    if (h.ready(s)) { hintOn = h; hintEl.textContent = h.txt; hintEl.classList.add('on'); hintHideAt = t + 6500; break; }
+  }
+}
+
+// ---- input ----
+const ptrs = new Map();
+let lastTouchT = -1e9, lastPtrType = 'mouse';
+function sizeOf(e) {
+  if (e.pointerType !== 'touch') return 0.5;
+  const d = Math.sqrt(Math.max(1, e.width || 1) * Math.max(1, e.height || 1));
+  let s = clamp((d - 12) / 30, 0, 1);
+  if (e.pressure > 0 && e.pressure !== 0.5) s = Math.max(s, clamp((e.pressure - 0.2) / 0.8, 0, 1));
+  return s;
+}
+cv.addEventListener('pointerdown', e => {
+  lastPtrType = e.pointerType; lastTouchT = now();
+  if (!started || e.button === 2) return;
+  e.preventDefault();
+  try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  const live = magnets.filter(m => m.alive && !m.pinned).length;
+  const m = live < MAXMAG ? addMagnet(e.clientX, e.clientY, false) : null;
+  if (m) m.size = sizeOf(e);
+  ptrs.set(e.pointerId, { m, x0: e.clientX, y0: e.clientY, t0: now(), moved: 0 });
+});
+addEventListener('pointermove', e => {
+  if (e.pointerType === 'mouse' && !e.buttons && W) { virt.mg = (e.clientX / W - 0.5) * 30; virt.mb = (e.clientY / H - 0.5) * 30; }
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  p.moved = Math.max(p.moved, Math.hypot(e.clientX - p.x0, e.clientY - p.y0));
+  if (p.m) { p.m.x = e.clientX; p.m.y = e.clientY; p.m.size = sizeOf(e); wake(0.3); }
+});
+function endPtr(e) {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  ptrs.delete(e.pointerId); lastTouchT = now();
+  if (p.m) p.m.alive = false;
+  if (e.type === 'pointerup' && now() - p.t0 < 220 && p.moved < 14) { if (p.m) p.m.q = 0; tapKnock(e.clientX, e.clientY, 1); }
+}
+cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
+addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (!started || lastPtrType !== 'mouse') return;
+  let best = null, bd = 900;
+  for (const m of magnets) if (m.pinned) { const d = (m.x - e.clientX) ** 2 + (m.y - e.clientY) ** 2; if (d < bd) { bd = d; best = m; } }
+  if (best) { best.pinned = false; best.alive = false; }
+  else if (magnets.filter(m => m.pinned).length < MAXMAG) addMagnet(e.clientX, e.clientY, true);
+});
+addEventListener('keydown', e => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k === ' ' || k === 'Enter') { if (!started) begin(W / 2, H / 2); else if (k === ' ') globalKnock(0.9); e.preventDefault(); return; }
+  if (/^Arrow/.test(k) || 'wasd'.includes(k)) { keys.add(k); wake(0.5); e.preventDefault(); }
+});
+addEventListener('keyup', e => { keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key); });
+addEventListener('blur', () => keys.clear());
+addEventListener('wheel', e => { virt.omega = clamp(virt.omega + clamp(e.deltaY, -150, 150) * 0.02, -10, 10); wake(0.5); }, { passive: true });
+
+// ---- start ----
+let wakeLock = null;
+async function requestWake() { try { if ('wakeLock' in navigator && !document.hidden) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {} }
+function begin(x, y) {
+  if (started || starting) return; starting = true;
+  audioInit();
+  if (AC && AC.state !== 'running') AC.resume().catch(() => {});
+  if (COARSE && !/iPhone|iPad|iPod/.test(navigator.userAgent) && document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen({ navigationUI: 'hide' }).then(() => { try { screen.orientation.lock('portrait').catch(() => {}); } catch (_) {} }).catch(() => {});
+  }
+  try { if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') DeviceMotionEvent.requestPermission().catch(() => {}); } catch (_) {}
+  try { if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') DeviceOrientationEvent.requestPermission().catch(() => {}); } catch (_) {}
+  started = true; startT = now();
+  introEl.classList.add('gone'); setTimeout(() => introEl.remove(), 2200);
+  tapKnock(x, y, 1.3); buzz(12); requestWake();
+  setTimeout(() => { if (!sens.ori) desktop = true; }, 1200);
+}
+introEl.addEventListener('click', e => begin(e.clientX, e.clientY));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (AC) AC.suspend().catch(() => {}); }
+  else { if (AC && started) AC.resume().catch(() => {}); if (started) requestWake(); lastT = now(); dirty = true; }
+});
+
+// ---- loop ----
+let lastT = now();
+function frame() {
+  const t = now();
+  let dt = (t - lastT) / 1000; lastT = t;
+  if (!(dt > 0)) dt = 0.016; if (dt > 0.034) dt = 0.034;
+  updateOrientation(dt, t);
+  updateMagnets(dt, t);
+  agit *= Math.exp(-dt / 0.3); if (agit < 0.003) agit = 0;
+  if (sens.motion) {
+    const thrK = Math.max(1.6, sens.floor * 5 + 0.6);
+    if (started && sens.peak > thrK && t - sens.lastKnock > 70 && t - lastTouchT > 170) { globalKnock(Math.min(1.6, 0.3 + (sens.peak - thrK) / 4)); sens.lastKnock = t; }
+    sens.peak = 0;
+  }
+  slideSum = 0;
+  if (started) {
+    if (magnets.length || Math.hypot(effG[0], effG[1]) > MU_G * 0.9 || Math.abs(omega) > 0.3 || agit > 0.01) wake(0.2);
+    if (wakeT > 0) { if (step(dt)) wake(0.2); wakeT -= dt; }
+    hintsFrame(t);
+  }
+  if (aok()) {
+    const at = AC.currentTime, lvl = Math.min(1, slideSum / (N * 10));
+    hissG.gain.setTargetAtTime(0.3 * lvl, at, 0.07);
+    hissF.frequency.setTargetAtTime(1800 + 3200 * lvl, at, 0.12);
+    if (landings > 0) {
+      const n = Math.min(5, Math.ceil(Math.sqrt(landings) / 3)), g = Math.min(1, landings / 80);
+      for (let k = 0; k < n; k++) tick(at + 0.005 + rnd() * 0.02, 3000 + rnd() * 6500, (0.012 + rnd() * 0.045) * (0.35 + 0.65 * g));
+    }
+  }
+  landings = 0;
+  if (!paper) resize();
+  if (dirty && paper) draw();
+  requestAnimationFrame(frame);
+}
+
+resize();
+if (DEMO) {
+  introEl.remove(); started = true; startT = now(); desktop = true; hintList = [];
+  addMagnet(W * 0.5, H * 0.37, true); addMagnet(W * 0.5, H * 0.63, true);
+  let n = 0; const iv = setInterval(() => { globalKnock(0.6); if (++n >= 8) clearInterval(iv); }, 380);
+}
+window.lodestone = {
+  knock: k => globalKnock(k || 1), tap: (x, y) => tapKnock(x, y, 1), pin: (x, y) => addMagnet(x, y, true),
+  clear: () => { for (const m of magnets) { m.pinned = false; m.alive = false; } },
+  get state() { return { N, W, H, started, desktop, magnets: magnets.length, sensors: { ori: sens.ori, abs: sens.abs, motion: sens.motion, gyro: sens.gyro } }; }
+};
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
