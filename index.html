@@ -29,6 +29,13 @@ body.ko #intro .s,body.ko #hint{font-style:normal}
 #hint{position:absolute;left:0;right:0;bottom:calc(34px + env(safe-area-inset-bottom,0px));padding:0 30px;text-align:center;font-size:15px;line-height:1.55;font-style:italic;opacity:0;transition:opacity 1.3s ease;pointer-events:none}
 #hint.on{opacity:.9}
 #hint .patch{display:inline-block;padding:16px 40px;border-radius:40px}
+#ui{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));right:12px;display:flex;gap:10px;opacity:0;transition:opacity 1.2s ease;pointer-events:none}
+#ui.on{opacity:1;pointer-events:auto}
+#ui button{width:46px;height:46px;border-radius:50%;border:1px solid rgba(60,44,26,.28);background:rgba(236,228,212,.84);box-shadow:0 1px 4px rgba(60,44,26,.18);padding:0;display:flex;align-items:center;justify-content:center;color:#2a2521;cursor:pointer;touch-action:manipulation}
+#ui button:active{transform:scale(.93)}
+#ui button.hide{display:none}
+#toast{position:absolute;top:calc(68px + env(safe-area-inset-top,0px));right:14px;font-size:14px;opacity:0;transition:opacity .5s ease;pointer-events:none}
+#toast.on{opacity:.92}
 </style>
 </head>
 <body>
@@ -38,6 +45,11 @@ body.ko #intro .s,body.ko #hint{font-style:normal}
   <div class="p patch" id="tap">tap the paper</div>
 </div>
 <div id="hint" class="halo" aria-live="polite"><span class="patch" id="hintTxt"></span></div>
+<div id="ui">
+  <button id="btnSprinkle" aria-label="sprinkle fresh filings"><svg width="26" height="26" viewBox="0 0 26 26" fill="currentColor"><circle cx="8" cy="9" r="1.7"/><circle cx="15" cy="7" r="1.7"/><circle cx="12" cy="14" r="1.7"/><circle cx="19" cy="15" r="1.7"/><circle cx="7" cy="18" r="1.7"/><circle cx="14" cy="21" r="1.7"/></svg></button>
+  <button id="btnLevel" aria-label="set level"><svg width="30" height="30" viewBox="0 0 30 30"><circle cx="15" cy="15" r="12" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="15" cy="15" r="4.6" fill="none" stroke="currentColor" stroke-width=".8" opacity=".55"/><circle id="bubble" cx="15" cy="15" r="3.4" fill="currentColor"/></svg></button>
+</div>
+<div id="toast" class="halo" aria-live="polite"></div>
 <noscript><p style="position:absolute;top:40%;width:100%;text-align:center">Lodestone needs JavaScript.</p></noscript>
 <script>
 (() => {
@@ -53,7 +65,10 @@ const TX = KO ? {
   d1: '종이를 꾹 누르고 있어 보세요. 그 아래에 자석이 있어요.',
   d2: '우클릭으로 자석을 놓아두고, 그 둘레를 톡톡 클릭해 보세요.',
   d3: '두 개를 놓으면, 두 개의 극.',
-  d4: '마우스로 빛을 비추고 · 방향키로 기울이고 · 스크롤로 돌리고 · 스페이스로 두드려요.'
+  d4: '마우스로 빛을 비추고 · 방향키로 기울이고 · 스크롤로 돌리고 · 스페이스로 두드려요.',
+  hL: '오른쪽 위 ◎ 버튼을 누르면, 지금 들고 있는 자세가 수평이 돼요.',
+  hS: '쇳가루가 한쪽에 몰리면, ∴ 버튼으로 새로 뿌려요.',
+  lv: '지금 자세를 수평으로 맞췄어요', sp: '새로 뿌렸어요'
 } : {
   sub: 'iron filings on paper', tap: 'tap the paper',
   h1: 'Rest a finger on the paper. A magnet waits beneath it.',
@@ -64,7 +79,10 @@ const TX = KO ? {
   d1: 'Press and hold on the paper. A magnet waits beneath it.',
   d2: 'Right-click to leave a magnet, then click around it.',
   d3: 'Leave two, and they become two poles.',
-  d4: 'Move the mouse to catch the light · arrow keys tilt · scroll twists · space knocks.'
+  d4: 'Move the mouse to catch the light · arrow keys tilt · scroll twists · space knocks.',
+  hL: 'The ◎ button (top right) makes the way you hold the phone right now level.',
+  hS: 'If the filings all end up in one place, ∴ sprinkles fresh ones.',
+  lv: 'Level set to how you hold it now', sp: 'Fresh filings'
 };
 const $ = id => document.getElementById(id);
 const cv = $('c'), ctx = cv.getContext('2d', { alpha: false }), introEl = $('intro'), hintEl = $('hint'), hintTxt = $('hintTxt');
@@ -85,8 +103,9 @@ const Q0 = 1.1e5, DEP = 26, DEP2 = DEP * DEP;          // magnet strength, depth
 const EARTH = 1.0, INCL = 53 * D2R;                     // Earth's field, inclination (Korea ~53°)
 const B0SQ = 2.5, BS2 = 64;                             // alignment softness, field that beats friction
 const RA = 30, RP = 14;                                 // alignment rates (in air / on paper)
-const KM = 1.3, MAXM = 190;                             // magnetic pull
-const GS = 420, MU_G = 0.2, MU = MU_G * GS, GA = 2600;  // gravity slide, friction, hop gravity
+const KM = 0.8, MAXM = 160;                             // magnetic pull (reaches only a few cm)
+const GS = 420, MUS = 0.3, MUK = 0.2, GA = 2600;        // 1 g in px/s, static / kinetic friction, hop gravity
+const DGS = 7, KP = 900;                                // crowding: grains take up room, so piles have thickness
 const HOLD = 130, MAXMAG = 6;
 
 let W = 0, H = 0, N = 0, ls = 1;
@@ -145,6 +164,12 @@ function makePaper() {
   paper = c; dirty = true;
 }
 
+let dgW = 0, dgH = 0, dens = null, exc = null, rho0 = 1;
+function setupGrid() {
+  dgW = Math.floor(W / DGS) + 3; dgH = Math.floor(H / DGS) + 3;
+  dens = new Float32Array(dgW * dgH); exc = new Float32Array(dgW * dgH);
+  rho0 = Math.max(1, N / ((W * H) / (DGS * DGS)) * 2.4);
+}
 function resize() {
   const nw = Math.round(window.innerWidth), nh = Math.round(window.innerHeight);
   if (nw < 60 || nh < 60 || (nw === W && nh === H)) return;
@@ -159,6 +184,7 @@ function resize() {
     for (let i = 0; i < N; i++) { px[i] = clamp(px[i] * sx, 1.5, W - 1.5); py[i] = clamp(py[i] * sy, 1.5, H - 1.5); }
     for (const m of magnets) { m.x *= sx; m.y *= sy; }
   }
+  setupGrid();
   makePaper();
 }
 addEventListener('resize', resize);
@@ -184,8 +210,20 @@ function w2d(v, a, b, g) {
   const y2 = cb * y1 + sb * z1, z2 = -sb * y1 + cb * z1;
   return [cg * x1 - sg * z2, y2, sg * x1 + cg * z2];
 }
-const sens = { ori: false, abs: false, t: 0, motion: false, peak: 0, floor: 0.15, gyro: false, rz: 0, rt: 0, hx: 0, hy: 0, hz: 0, lastKnock: 0, init: false };
-const raw = { g: [0, 0, -1], L: [0, 0, 1], E: [0, 0.6, -0.8] }, sm = { g: [0, 0, -1], L: [0, 0, 1], E: [0, 0.6, -0.8] }, base = [0, 0, -1];
+const sens = { ori: false, abs: false, t: 0, motion: false, mt: 0, peak: 0, floor: 0.3, gyro: false, rz: 0, rt: 0, hx: 0, hy: 0, hz: 0, ax: 0, ay: 0, lastKnock: 0, init: false };
+const raw = { g: [0, 0, -1], L: [0, 0, 1], E: [0, 0.6, -0.8] }, sm = { g: [0, 0, -1], L: [0, 0, 1], E: [0, 0.6, -0.8] };
+// "level": the pose the person chose as flat (set at the first tap and by the ◎ button; it never drifts on its own)
+const ref = [0, 0, -1];
+let needLevel = false;
+// tilt of g relative to ref: rotate g by the rotation that carries ref onto straight-down
+function relTilt(g, r) {
+  let kx = -r[1], ky = r[0];
+  const s = Math.hypot(kx, ky), c = -r[2];
+  if (s < 1e-6) return c > 0 ? [g[0], g[1]] : [-g[0], -g[1]];
+  kx /= s; ky /= s;
+  const kv = kx * g[0] + ky * g[1];
+  return [g[0] * c + ky * g[2] * s + kx * kv * (1 - c), g[1] * c - kx * g[2] * s + ky * kv * (1 - c)];
+}
 function fromAngles(a, b, g) { raw.g = w2d([0, 0, -1], a, b, g); raw.L = w2d(lightW.v, a, b, g); raw.E = w2d(earthW, a, b, g); }
 function onOrient(e, isAbs) {
   if (e.beta == null || e.gamma == null) return;
@@ -199,17 +237,23 @@ function onOrient(e, isAbs) {
 addEventListener('deviceorientationabsolute', e => onOrient(e, true));
 addEventListener('deviceorientation', e => onOrient(e, !!e.absolute));
 addEventListener('devicemotion', e => {
-  let m = -1;
+  let m = -1, lx = 0, ly = 0;
   const a = e.acceleration;
-  if (a && a.x != null) m = Math.hypot(a.x, a.y, a.z || 0);
+  if (a && a.x != null) { lx = a.x; ly = a.y; m = Math.hypot(a.x, a.y, a.z || 0); }
   else {
     const g = e.accelerationIncludingGravity;
     if (g && g.x != null) {
       sens.hx += (g.x - sens.hx) * 0.1; sens.hy += (g.y - sens.hy) * 0.1; sens.hz += ((g.z || 0) - sens.hz) * 0.1;
-      m = Math.hypot(g.x - sens.hx, g.y - sens.hy, (g.z || 0) - sens.hz);
+      lx = g.x - sens.hx; ly = g.y - sens.hy; m = Math.hypot(lx, ly, (g.z || 0) - sens.hz);
     }
   }
-  if (m >= 0) { sens.motion = true; if (m > sens.peak) sens.peak = m; if (m < sens.floor * 3 + 0.4) sens.floor += (m - sens.floor) * 0.01; }
+  if (m >= 0) {
+    sens.motion = true; sens.mt = now();
+    // the paper's own acceleration (device frame): the grains lag behind it, like sand in a shaken tray
+    sens.ax += (lx - sens.ax) * 0.5; sens.ay += (ly - sens.ay) * 0.5;
+    if (m > sens.peak) sens.peak = m;
+    if (m < sens.floor * 3 + 0.5) sens.floor += (m - sens.floor) * 0.01;
+  }
   const r = e.rotationRate;
   if (r && r.alpha != null) { sens.gyro = true; sens.rz = r.alpha; sens.rt = now(); }
 });
@@ -217,7 +261,7 @@ addEventListener('devicemotion', e => {
 const virt = { beta: 0, gamma: 0, alpha: 0, omega: 0, mb: 0, mg: 0 };
 const keys = new Set();
 let omega = 0, face = 1;
-const effG = [0, 0], lightP = [0, 0, 1], earthP = [0, -0.6];
+const effG = [0, 0], tiltS = [0, 0], lightP = [0, 0, 1], earthP = [0, -0.6];
 function scrAngle() { return (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0); }
 function devToScr(x, y) { const a = scrAngle() * D2R, c = Math.cos(a), s = Math.sin(a); return [x * c - y * s, -(x * s + y * c)]; }
 function mix3(o, t, k) { o[0] += (t[0] - o[0]) * k; o[1] += (t[1] - o[1]) * k; o[2] += (t[2] - o[2]) * k; }
@@ -243,11 +287,17 @@ function updateOrientation(dt, t) {
     const target = (sens.gyro && t - sens.rt < 500) ? sens.rz * D2R : 0;
     omega += (target - omega) * (1 - Math.exp(-dt / 0.05));
   }
-  if (live && !sens.init) { sens.init = true; for (let i = 0; i < 3; i++) { sm.g[i] = raw.g[i]; base[i] = raw.g[i]; sm.L[i] = raw.L[i]; sm.E[i] = raw.E[i]; } }
+  if (live && !sens.init) { sens.init = true; for (let i = 0; i < 3; i++) { sm.g[i] = raw.g[i]; ref[i] = raw.g[i]; sm.L[i] = raw.L[i]; sm.E[i] = raw.E[i]; } }
   const k = 1 - Math.exp(-dt / 0.07);
   mix3(sm.g, raw.g, k); norm3(sm.g); mix3(sm.L, raw.L, k); norm3(sm.L); mix3(sm.E, raw.E, k);
-  if (live) { mix3(base, sm.g, 1 - Math.exp(-dt / 7)); norm3(base); } else { base[0] = 0; base[1] = 0; base[2] = -1; }
-  const s = devToScr(sm.g[0] - base[0], sm.g[1] - base[1]); effG[0] = s[0]; effG[1] = s[1];
+  if (!live) { ref[0] = 0; ref[1] = 0; ref[2] = -1; }
+  else if (needLevel) { needLevel = false; ref[0] = sm.g[0]; ref[1] = sm.g[1]; ref[2] = sm.g[2]; }
+  const rt = relTilt(sm.g, ref), s = devToScr(rt[0], rt[1]);
+  tiltS[0] = s[0]; tiltS[1] = s[1];
+  // inertia: when the phone is shoved, the grains feel a push the other way (in g)
+  const fresh = sens.motion && t - sens.mt < 300;
+  const ia = fresh ? devToScr(-clamp(sens.ax, -25, 25) / 9.81, -clamp(sens.ay, -25, 25) / 9.81) : [0, 0];
+  effG[0] = s[0] + ia[0]; effG[1] = s[1] + ia[1];
   const l = devToScr(sm.L[0], sm.L[1]);
   face = sstep(sm.L[2], -0.05, 0.35);
   const lz = Math.max(sm.L[2], 0.12), ll = Math.hypot(l[0], l[1], lz);
@@ -306,7 +356,7 @@ function clack(v) { if (!aok()) return; const t = AC.currentTime + 0.003; burst(
 function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (_) {} }
 
 // ---- magnets, taps, knocks ----
-const stats = { magnet: false, tapMag: false, two: false };
+const stats = { magnet: false, tapMag: false, two: false, leveled: false, sprinkled: false };
 function pickSign() { let s = 0; for (const m of magnets) if (m.alive || m.pinned) s += m.sign; return s > 0 ? -1 : 1; }
 function addMagnet(x, y, pinned) { const m = { x, y, q: 0, sign: pickSign(), size: 0.5, alive: true, pinned, t0: now(), on: false }; magnets.push(m); wake(0.5); return m; }
 function updateMagnets(dt, t) {
@@ -328,7 +378,7 @@ function updateMagnets(dt, t) {
 }
 function globalKnock(k) {
   agit = Math.min(2, agit + k * 0.8);
-  for (let i = 0; i < N; i++) { vz[i] += k * (70 + 220 * rnd()); th[i] += randn() * 0.7 * k; vx[i] += randn() * 35 * k; vy[i] += randn() * 35 * k; }
+  for (let i = 0; i < N; i++) { vz[i] += k * (70 + 220 * rnd()); th[i] += randn() * 0.5 * k; vx[i] += randn() * 30 * k; vy[i] += randn() * 30 * k; }
   thump(k); wake(1);
 }
 function tapKnock(x, y, s) {
@@ -350,12 +400,20 @@ function tapKnock(x, y, s) {
 const MX = new Float32Array(16), MY = new Float32Array(16), MQ = new Float32Array(16);
 let wakeT = 0, slideSum = 0, landings = 0;
 function wake(s) { if (s > wakeT) wakeT = s; }
+function buildDensity() {
+  dens.fill(0);
+  for (let i = 0; i < N; i++) dens[((py[i] / DGS) | 0) * dgW + ((px[i] / DGS) | 0)] += 1;
+  const inv = 1 / rho0;
+  for (let c = 0; c < dens.length; c++) { const e = dens[c] * inv - 1; exc[c] = e > 0 ? e : 0; }
+}
 function step(dt) {
   let M = 0;
   for (const m of magnets) if (Math.abs(m.q) > 1 && M < 16) { MX[M] = m.x; MY[M] = m.y; MQ[M] = m.q; M++; }
+  buildDensity();
   const ex = earthP[0], ey = earthP[1], gx = effG[0] * GS, gy = effG[1] * GS;
-  const w = omega, aw = Math.abs(w), tb = Math.max(0, aw - 2) * 0.35, cent = w * w * 0.02, cx = W * 0.5, cy = H * 0.5;
-  const thr = MU * Math.max(0, 1 - agit * 1.3), rotAg = Math.min(1, agit * 1.5);
+  const w = clamp(omega, -6, 6), cx = W * 0.5, cy = H * 0.5;
+  const ag = Math.min(1, agit), thrS = MUS * GS * (1 - 0.6 * ag), thrK = MUK * GS * (1 - 0.6 * ag);
+  const rotAg = Math.min(1, agit * 1.5), twistSlip = Math.min(0.6, agit * 0.6);
   const ea = Math.exp(-dt * 3), decV = Math.exp(-dt * 10), Wm = W - 1.5, Hm = H - 1.5;
   let moved = 0, land = 0, slide = 0;
   for (let i = 0; i < N; i++) {
@@ -376,30 +434,50 @@ function step(dt) {
       if (f2 > MAXM * MAXM) { const s = MAXM / Math.sqrt(f2); fx *= s; fy *= s; }
       const core = sstep(Math.sqrt(rmin), 12, 34); fx *= core; fy *= core;
     }
+    // crowding: a grain can't sit where the paper is already full, so heaps spread instead of collapsing to a line
+    let dc = (x / DGS) | 0, dr = (y / DGS) | 0;
+    if (dc < 1) dc = 1; else if (dc > dgW - 2) dc = dgW - 2;
+    if (dr < 1) dr = 1; else if (dr > dgH - 2) dr = dgH - 2;
+    const di = dr * dgW + dc, e0 = exc[di];
+    // the tray walls count as full, so a heap against a wall builds outward instead of lining up on it
+    const eL = x - DGS < 0 ? e0 * 1.5 : exc[di - 1], eR = x + DGS > W ? e0 * 1.5 : exc[di + 1];
+    const eU = y - DGS < 0 ? e0 * 1.5 : exc[di - dgW], eD = y + DGS > H ? e0 * 1.5 : exc[di + dgW];
+    let qx = (eL - eR) * 0.5 * KP, qy = (eU - eD) * 0.5 * KP;
+    const qm = qx * qx + qy * qy;
+    if (qm > 250000) { const s = 500 / Math.sqrt(qm); qx *= s; qy *= s; }
+    if (e0 > 0.8) { const j = Math.min(4, e0) * 6 * dt; x += randn() * j; y += randn() * j; }
     const fB = b2 / (b2 + B0SQ);
     let dth = Math.atan2(By, Bx) - t; dth -= PI * Math.round(dth / PI);
     if (z > 0 || v > 0) {
       v -= GA * dt; z += v * dt;
-      let ux = vx[i] * ea + (gx * 0.6 + fx * 0.5) * dt, uy = vy[i] * ea + (gy * 0.6 + fy * 0.5) * dt;
+      let ux = vx[i] * ea + (gx * 0.8 + fx * 0.5 + qx * 0.3) * dt, uy = vy[i] * ea + (gy * 0.8 + fy * 0.5 + qy * 0.3) * dt;
       x += ux * dt; y += uy * dt;
-      if (z <= 0) { z = 0; v = 0; ux *= 0.25; uy *= 0.25; land++; }
+      if (z <= 0) { z = 0; v = 0; ux *= 0.3; uy *= 0.3; land++; }
       vx[i] = ux; vy[i] = uy;
       t += dth * (1 - Math.exp(-RA * fB * dt));
       moved++;
     } else {
-      const ux = vx[i], uy = vy[i], dX = gx + fx + ux, dY = gy + fy + uy;
+      const ux = vx[i], uy = vy[i], dX = gx + fx + qx + ux, dY = gy + fy + qy + uy;
       vx[i] = ux * decV; vy[i] = uy * decV;
       const dm = Math.sqrt(dX * dX + dY * dY);
-      if (dm > thr) { const s = (dm - thr) / dm * dt; x += dX * s; y += dY * s; slide += dm - thr; moved++; }
+      // stick until the push beats static friction, then slide against the (smaller) kinetic friction
+      if (dm > thrS) {
+        const sp = dm - thrK, s = sp / dm * dt;
+        x += dX * s; y += dY * s; slide += sp; moved++;
+        // long grains turn to follow the flow unless a field is holding them
+        let df = Math.atan2(dY, dX) - t; df -= PI * Math.round(df / PI);
+        t += df * Math.min(1, sp * dt * 0.04) * (1 - fB * 0.85);
+      }
       const rm = Math.min(1, rotAg + Math.max(0, (b2 - BS2) / (BS2 * 2)));
       if (rm > 0.002 && Math.abs(dth) > 0.002) { t += dth * (1 - Math.exp(-RP * fB * rm * dt)); moved++; }
-      if (agit > 0.04) { const j = agit * 14 * dt; x += randn() * j; y += randn() * j; moved++; }
+      if (agit > 0.04) { const j = agit * 8 * dt; x += randn() * j; y += randn() * j; moved++; }
     }
-    if (aw > 0.05) {
-      const slip = z > 0 ? 1 : Math.min(1, agit * 1.2 + tb);
+    // twisting the phone: friction carries the grains along with the paper; only loose ones lag behind
+    if (w > 0.05 || w < -0.05) {
+      const slip = z > 0 ? 0.9 : twistSlip;
       if (slip > 0.001) {
-        const ang = w * dt * slip, c = Math.cos(ang), s = Math.sin(ang), rx = x - cx, ry = y - cy, g2 = 1 + cent * slip * dt;
-        x = cx + (rx * c - ry * s) * g2; y = cy + (rx * s + ry * c) * g2; t += ang; moved++;
+        const ang = w * dt * slip, c = Math.cos(ang), s = Math.sin(ang), rx = x - cx, ry = y - cy;
+        x = cx + rx * c - ry * s; y = cy + rx * s + ry * c; t += ang; moved++;
       }
     }
     if (x < 1.5) x = 1.5; else if (x > Wm) x = Wm;
@@ -460,7 +538,9 @@ let hintList = null, hintOn = null, hintHideAt = 0, hintNextAt = 0, startT = 0, 
 function hintsFrame(t) {
   if (!hintList) { if (t - startT < 1300) return; const d = desktop; hintList = [
     { txt: d ? TX.d1 : TX.h1, ready: s => s > 2.5, done: () => stats.magnet },
+    { txt: TX.hL, ready: s => s > 8 && !d, done: () => stats.leveled },
     { txt: d ? TX.d2 : TX.h2, ready: () => stats.magnet, done: () => stats.tapMag },
+    { txt: TX.hS, ready: s => s > 40, done: () => stats.sprinkled },
     { txt: d ? TX.d3 : TX.h3, ready: s => stats.tapMag || s > 45, done: () => stats.two },
     { txt: d ? TX.d4 : TX.h4, ready: s => s > (d ? 14 : 28), done: () => false },
     { txt: TX.h5, ready: s => s > 60 && sens.abs, done: () => false }]; }
@@ -524,6 +604,30 @@ addEventListener('keyup', e => { keys.delete(e.key.length === 1 ? e.key.toLowerC
 addEventListener('blur', () => keys.clear());
 addEventListener('wheel', e => { virt.omega = clamp(virt.omega + clamp(e.deltaY, -150, 150) * 0.02, -10, 10); wake(0.5); }, { passive: true });
 
+// ---- the two buttons: level (◎) and sprinkle (∴) ----
+const uiEl = $('ui'), btnLevel = $('btnLevel'), btnSprinkle = $('btnSprinkle'), bubble = $('bubble'), toastEl = $('toast');
+let toastTimer = 0, bubX = 0, bubY = 0;
+function toast(s) { toastEl.textContent = s; toastEl.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('on'), 1700); }
+function level() {
+  needLevel = true; stats.leveled = true; toast(TX.lv); buzz(15);
+  if (aok()) tone(AC.currentTime + 0.01, 880, 1320, 0.12, 0.05, 'sine');
+}
+function resprinkle() {
+  sprinkle();
+  for (let i = 0; i < N; i++) { pz[i] = 20 + rnd() * 170; vz[i] = -rnd() * 60; }
+  for (const m of magnets) { if (m.pinned) { m.pinned = false; m.alive = false; } }
+  agit = Math.max(agit, 0.3); stats.sprinkled = true; wake(3); toast(TX.sp);
+  if (aok()) burst(AC.currentTime + 0.01, 0.45, 'bandpass', 5200, 0.7, 0.05);
+}
+function updateBubble() {
+  // a spirit level: the bubble drifts to the high side of the paper
+  const r = Math.hypot(tiltS[0], tiltS[1]), k = r > 0.6 ? 0.6 / r : 1;
+  const nx = 15 - tiltS[0] * k * 12, ny = 15 - tiltS[1] * k * 12;
+  if (Math.abs(nx - bubX) + Math.abs(ny - bubY) > 0.15) { bubX = nx; bubY = ny; bubble.setAttribute('cx', nx.toFixed(2)); bubble.setAttribute('cy', ny.toFixed(2)); }
+}
+btnLevel.addEventListener('click', e => { e.stopPropagation(); level(); btnLevel.blur(); });
+btnSprinkle.addEventListener('click', e => { e.stopPropagation(); resprinkle(); btnSprinkle.blur(); });
+
 // ---- start ----
 let wakeLock = null;
 async function requestWake() { try { if ('wakeLock' in navigator && !document.hidden) wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {} }
@@ -536,10 +640,11 @@ function begin(x, y) {
   }
   try { if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') DeviceMotionEvent.requestPermission().catch(() => {}); } catch (_) {}
   try { if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') DeviceOrientationEvent.requestPermission().catch(() => {}); } catch (_) {}
-  started = true; startT = now();
+  started = true; startT = now(); needLevel = true;
   introEl.classList.add('gone'); setTimeout(() => introEl.remove(), 2200);
+  uiEl.classList.add('on');
   tapKnock(x, y, 1.3); buzz(12); requestWake();
-  setTimeout(() => { if (!sens.ori) desktop = true; }, 1200);
+  setTimeout(() => { if (!sens.ori) { desktop = true; btnLevel.classList.add('hide'); } }, 1200);
 }
 introEl.addEventListener('click', e => begin(e.clientX, e.clientY));
 document.addEventListener('visibilitychange', () => {
@@ -557,13 +662,15 @@ function frame() {
   updateMagnets(dt, t);
   agit *= Math.exp(-dt / 0.3); if (agit < 0.003) agit = 0;
   if (sens.motion) {
-    const thrK = Math.max(1.6, sens.floor * 5 + 0.6);
-    if (started && sens.peak > thrK && t - sens.lastKnock > 70 && t - lastTouchT > 170) { globalKnock(Math.min(1.6, 0.3 + (sens.peak - thrK) / 4)); sens.lastKnock = t; }
+    const thrK = Math.max(2.8, sens.floor * 5 + 1);
+    if (started && sens.peak > thrK && t - sens.lastKnock > 90 && t - lastTouchT > 170) { globalKnock(Math.min(1.4, 0.25 + (sens.peak - thrK) / 5)); sens.lastKnock = t; }
     sens.peak = 0;
+    if (t - sens.mt > 300) { sens.ax *= 0.8; sens.ay *= 0.8; }
   }
+  updateBubble();
   slideSum = 0;
   if (started) {
-    if (magnets.length || Math.hypot(effG[0], effG[1]) > MU_G * 0.9 || Math.abs(omega) > 0.3 || agit > 0.01) wake(0.2);
+    if (magnets.length || Math.hypot(effG[0], effG[1]) > MUS * 0.85 || Math.abs(omega) > 0.3 || agit > 0.01) wake(0.2);
     if (wakeT > 0) { if (step(dt)) wake(0.2); wakeT -= dt; }
     hintsFrame(t);
   }
@@ -591,6 +698,8 @@ if (DEMO) {
 window.lodestone = {
   knock: k => globalKnock(k || 1), tap: (x, y) => tapKnock(x, y, 1), pin: (x, y) => addMagnet(x, y, true),
   clear: () => { for (const m of magnets) { m.pinned = false; m.alive = false; } },
+  sim: sec => { const d = 1 / 60; for (let k = 0; k < sec * 60; k++) { const t = now(); sens.t = t; sens.mt = t; updateOrientation(d, t); updateMagnets(d, t); agit *= Math.exp(-d / 0.3); step(d); } dirty = true; },
+  level: () => level(), sprinkle: () => resprinkle(),
   get state() { return { N, W, H, started, desktop, magnets: magnets.map(m => [Math.round(m.q), m.alive, m.pinned]), nan: Array.prototype.some.call(px, v => v !== v), sensors: { ori: sens.ori, abs: sens.abs, motion: sens.motion, gyro: sens.gyro } }; }
 };
 requestAnimationFrame(frame);
