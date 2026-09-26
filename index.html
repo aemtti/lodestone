@@ -583,7 +583,7 @@ if (DEMO) {
 window.lodestone = {
   knock: k => globalKnock(k || 1), tap: (x, y) => tapKnock(x, y, 1), pin: (x, y) => addMagnet(x, y, true),
   clear: () => { for (const m of magnets) { m.pinned = false; m.alive = false; } },
-  get state() { return { N, W, H, started, desktop, magnets: magnets.length, sensors: { ori: sens.ori, abs: sens.abs, motion: sens.motion, gyro: sens.gyro } }; }
+  get state() { return { N, W, H, started, desktop, magnets: magnets.map(m => [Math.round(m.q), m.alive, m.pinned]), nan: Array.prototype.some.call(px, v => v !== v), sensors: { ori: sens.ori, abs: sens.abs, motion: sens.motion, gyro: sens.gyro } }; }
 };
 requestAnimationFrame(frame);
 })();
